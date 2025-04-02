@@ -1,0 +1,770 @@
+---
+- name: Konfiguracja Ubuntu 24.04
+  hosts: servers
+  become: yes  # używa sudo
+  
+  tasks:
+    # Aktualizacja systemu
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Fix missing packages
+      apt:
+        name: "*"
+        state: present
+        install_recommends: no
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: full
+        state: latest
+
+    # Czyszczenie systemu
+    - name: Fix broken packages
+      apt:
+        state: fixed
+
+    - name: Remove unused packages
+      apt:
+        autoremove: yes
+
+    - name: Autoclean apt
+      apt:
+        autoclean: yes
+
+    - name: Clean apt cache
+      apt:
+        clean: yes
+
+    # Instalacja podstawowych narzędzi
+    - name: Install basic tools
+      apt:
+        name:
+          - bash-completion
+          - curl
+          - wget
+          - vim
+          - git
+          - htop
+          - iotop
+          - iftop
+          - ncdu
+          - tmux
+          - net-tools
+          - dnsutils
+          - unzip
+          - zip
+          - tar
+          - rsync
+          - logrotate
+          - cron
+          - gnupg
+          - ca-certificates
+          - apt-transport-https
+          - software-properties-common
+          - python3
+          - python3-pip
+        state: present
+
+    # Konfiguracja SSH
+    - name: Configure SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?AllowTcpForwarding', line: 'AllowTcpForwarding no' }
+        - { regexp: '^#?AllowAgentForwarding', line: 'AllowAgentForwarding no' }
+        - { regexp: '^#?AuthorizedKeysFile', line: 'AuthorizedKeysFile .ssh/authorized_keys' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+      notify: Restart SSH
+
+    # Przygotowanie katalogu SSH (opcjonalnie)
+    - name: Ensure SSH directory exists
+      file:
+        path: /home/turbo/.ssh
+        state: directory
+        mode: '0700'
+        owner: turbo
+        group: turbo
+
+    # Instalacja i konfiguracja UFW
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+    - name: Allow SSH in UFW
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Allow HTTP in UFW
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Allow HTTPS in UFW
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+        
+    # Dodanie reguł dla Cloudflare
+    - name: Get Cloudflare IPs
+      uri:
+        url: https://api.cloudflare.com/client/v4/ips
+        return_content: yes
+      register: cloudflare_ips
+      
+    - name: Allow Cloudflare IPv4 IPs
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+        from: "{{ cloudflare_ip }}"
+      loop: ['80', '443']
+      loop_control:
+        loop_var: item
+      with_items: "{{ cloudflare_ips.json.result.ipv4_cidrs }}"
+      loop_control:
+        loop_var: cloudflare_ip
+      when: cloudflare_ips.status == 200
+        
+    - name: Allow Cloudflare IPv6 IPs (if IPv6 is enabled)
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+        from: "{{ cloudflare_ip }}"
+      loop: ['80', '443']
+      loop_control:
+        loop_var: item
+      with_items: "{{ cloudflare_ips.json.result.ipv6_cidrs }}"
+      loop_control:
+        loop_var: cloudflare_ip
+      when: cloudflare_ips.status == 200
+      
+    # Dodanie reguł dla Docker
+    - name: Allow Docker exposed ports in UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - '2375'  # Docker daemon (bez TLS, tylko lokalnie)
+        - '2376'  # Docker daemon (z TLS)
+        - '2377'  # Docker Swarm cluster management
+        - '7946'  # Docker Swarm node communication (TCP i UDP)
+        - '4789'  # Docker Swarm overlay network (UDP)
+
+    - name: Enable UFW logging
+      ufw:
+        logging: 'on'
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    # Instalacja Fail2ban
+    - name: Install Fail2ban
+      apt:
+        name: fail2ban
+        state: present
+
+    - name: Configure Fail2ban główny plik jail.local
+      copy:
+        content: |
+          [DEFAULT]
+          # Bany na 12 godzin (w sekundach)
+          bantime = 43200
+          # Czas w którym szukamy nieudanych prób (w sekundach)
+          findtime = 600
+          # Liczba nieudanych prób zanim nałożymy bana
+          maxretry = 3
+          # Ignorowanie własnego IP (opcjonalne)
+          ignoreip = 127.0.0.1/8 ::1
+          # Użyj akcji ufw do banowania (zamiast iptables)
+          banaction = ufw
+          banaction_allports = ufw
+
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 43200
+          findtime = 600
+
+          [sshd-ddos]
+          enabled = true
+          port = ssh
+          filter = sshd-ddos
+          logpath = /var/log/auth.log
+          maxretry = 2
+          bantime = 86400
+          findtime = 600
+
+          [docker-login]
+          enabled = true
+          filter = docker-login
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 43200
+          findtime = 600
+
+          [docker-authentication]
+          enabled = true
+          filter = docker-authentication
+          logpath = /var/log/syslog
+          maxretry = 3
+          bantime = 43200
+          findtime = 600
+
+          [nginx-http-auth]
+          enabled = true
+          filter = nginx-http-auth
+          port = http,https
+          logpath = /var/log/nginx/error.log
+          maxretry = 3
+          bantime = 43200
+          findtime = 600
+
+          [nginx-botsearch]
+          enabled = true
+          filter = nginx-botsearch
+          port = http,https
+          logpath = /var/log/nginx/access.log
+          maxretry = 2
+          bantime = 86400
+          findtime = 600
+
+          [nginx-bad-request]
+          enabled = true
+          filter = nginx-bad-request
+          port = http,https
+          logpath = /var/log/nginx/access.log
+          maxretry = 3
+          bantime = 43200
+          findtime = 600
+        dest: /etc/fail2ban/jail.local
+      notify: Restart Fail2ban
+
+    - name: Create Fail2ban docker-login filter
+      copy:
+        content: |
+          [Definition]
+          failregex = ^.*Failed publickey for .* from <HOST> port [0-9]+ ssh2$
+                      ^.*authentication failure; logname=.* uid=.* euid=.* tty=.* ruser=.* rhost=<HOST>.*$
+                      ^.*refused connect from \S+ \(<HOST>\).*$
+          ignoreregex =
+        dest: /etc/fail2ban/filter.d/docker-login.conf
+      notify: Restart Fail2ban
+
+    - name: Create Fail2ban docker-authentication filter
+      copy:
+        content: |
+          [Definition]
+          failregex = ^.*docker.*(Authentication failure|Failed authentication|Authentication failed) .* from <HOST>.*$
+                      ^.*dockerd.*Unable to authenticate user .* from <HOST>.*$
+          ignoreregex =
+        dest: /etc/fail2ban/filter.d/docker-authentication.conf
+      notify: Restart Fail2ban
+
+    - name: Create custom nginx bad request filter
+      copy:
+        content: |
+          [Definition]
+          failregex = ^<HOST> .* "(GET|POST|HEAD).*HTTP.*" (400|403|404|405)
+          ignoreregex =
+        dest: /etc/fail2ban/filter.d/nginx-bad-request.conf
+      notify: Restart Fail2ban
+
+    # Automatyczne aktualizacje
+    - name: Install unattended-upgrades
+      apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Configure unattended-upgrades
+      shell: dpkg-reconfigure -plow unattended-upgrades
+      args:
+        executable: /bin/bash
+
+    # Instalacja Docker
+    - name: Remove old Docker versions
+      apt:
+        name:
+          - docker
+          - docker-engine
+          - docker.io
+          - containerd
+          - runc
+        state: absent
+
+    - name: Install required packages for Docker repository
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch={{ ansible_architecture }} signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+        
+    - name: Add domain to hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "127.0.0.1 mk.devops.wroclaw.pl"
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+          - docker-compose
+        state: present
+        update_cache: yes
+
+    - name: Add user to docker group
+      user:
+        name: turbo
+        groups: docker
+        append: yes
+
+    - name: Enable and start Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+        
+    # Konfiguracja Docker dla poprawnej pracy z UFW
+    - name: Create Docker daemon configuration directory
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+        
+    - name: Configure Docker daemon to not interfere with UFW
+      copy:
+        content: |
+          {
+            "iptables": false,
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            },
+            "default-address-pools": [
+              {
+                "base": "172.17.0.0/16",
+                "size": 24
+              }
+            ]
+          }
+        dest: /etc/docker/daemon.json
+      notify: Restart Docker
+        
+    # Dodanie Docker Compose stack dla podstawowej infrastruktury (Nginx, etc.)
+    - name: Create directory for Docker Compose project
+      file:
+        path: /home/turbo/docker
+        state: directory
+        owner: turbo
+        group: turbo
+        mode: '0755'
+        
+    - name: Create Docker Compose file
+      copy:
+        content: |
+          version: '3'
+          
+          services:
+            nginx:
+              image: nginx:latest
+              container_name: nginx-proxy
+              restart: always
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./nginx/conf.d:/etc/nginx/conf.d
+                - ./nginx/html:/usr/share/nginx/html
+                - ./nginx/ssl:/etc/nginx/ssl
+                - ./nginx/logs:/var/log/nginx
+              networks:
+                - web
+                
+            # Możesz dodać więcej usług w zależności od potrzeb
+            # watchtower:
+            #   image: containrrr/watchtower
+            #   container_name: watchtower
+            #   restart: always
+            #   volumes:
+            #     - /var/run/docker.sock:/var/run/docker.sock
+            #   command: --interval 86400 --cleanup
+                
+          networks:
+            web:
+              driver: bridge
+        dest: /home/turbo/docker/docker-compose.yml
+        owner: turbo
+        group: turbo
+        mode: '0644'
+        
+    - name: Create Nginx configuration directories
+      file:
+        path: "/home/turbo/docker/nginx/{{ item }}"
+        state: directory
+        owner: turbo
+        group: turbo
+        mode: '0755'
+      loop:
+        - conf.d
+        - html
+        - ssl
+        - logs
+        
+    - name: Create basic Nginx configuration
+      copy:
+        content: |
+          server {
+              listen 80;
+              server_name mk.devops.wroclaw.pl;
+              
+              # Przekierowanie HTTP na HTTPS
+              location / {
+                  return 301 https://$host$request_uri;
+              }
+          }
+          
+          server {
+              listen 443 ssl;
+              server_name mk.devops.wroclaw.pl;
+              
+              # SSL configuration
+              ssl_certificate /etc/nginx/ssl/cert.pem;
+              ssl_certificate_key /etc/nginx/ssl/key.pem;
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_prefer_server_ciphers on;
+              ssl_ciphers 'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
+              
+              # Cloudflare real IP
+              set_real_ip_from 103.21.244.0/22;
+              set_real_ip_from 103.22.200.0/22;
+              set_real_ip_from 103.31.4.0/22;
+              set_real_ip_from 104.16.0.0/13;
+              set_real_ip_from 104.24.0.0/14;
+              set_real_ip_from 108.162.192.0/18;
+              set_real_ip_from 131.0.72.0/22;
+              set_real_ip_from 141.101.64.0/18;
+              set_real_ip_from 162.158.0.0/15;
+              set_real_ip_from 172.64.0.0/13;
+              set_real_ip_from 173.245.48.0/20;
+              set_real_ip_from 188.114.96.0/20;
+              set_real_ip_from 190.93.240.0/20;
+              set_real_ip_from 197.234.240.0/22;
+              set_real_ip_from 198.41.128.0/17;
+              set_real_ip_from 2400:cb00::/32;
+              set_real_ip_from 2606:4700::/32;
+              set_real_ip_from 2803:f800::/32;
+              set_real_ip_from 2405:b500::/32;
+              set_real_ip_from 2405:8100::/32;
+              set_real_ip_from 2a06:98c0::/29;
+              set_real_ip_from 2c0f:f248::/32;
+              real_ip_header CF-Connecting-IP;
+              
+              location / {
+                  root /usr/share/nginx/html;
+                  index index.html;
+                  try_files $uri $uri/ =404;
+              }
+              
+              # Dodatkowe ustawienia bezpieczeństwa
+              add_header X-Content-Type-Options nosniff;
+              add_header X-Frame-Options SAMEORIGIN;
+              add_header X-XSS-Protection "1; mode=block";
+              add_header Content-Security-Policy "default-src 'self'; script-src 'self'; img-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'";
+              add_header Referrer-Policy strict-origin-when-cross-origin;
+          }
+        dest: /home/turbo/docker/nginx/conf.d/default.conf
+        owner: turbo
+        group: turbo
+        mode: '0644'
+        
+    - name: Create sample index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>mk.devops.wroclaw.pl</title>
+              <style>
+                  body {
+                      font-family: Arial, sans-serif;
+                      margin: 0;
+                      padding: 50px;
+                      background-color: #f5f5f5;
+                  }
+                  .container {
+                      max-width: 800px;
+                      margin: 0 auto;
+                      background-color: white;
+                      padding: 30px;
+                      border-radius: 10px;
+                      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                  }
+                  h1 {
+                      color: #333;
+                  }
+                  p {
+                      line-height: 1.6;
+                      color: #666;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>Witaj na serwerze mk.devops.wroclaw.pl</h1>
+                  <p>Serwer został pomyślnie skonfigurowany przy użyciu Ansible.</p>
+                  <p>Ta strona jest obsługiwana przez Nginx działający w kontenerze Docker.</p>
+              </div>
+          </body>
+          </html>
+        dest: /home/turbo/docker/nginx/html/index.html
+        owner: turbo
+        group: turbo
+        mode: '0644'
+
+    # Synchronizacja czasu
+    - name: Install Chrony
+      apt:
+        name: chrony
+        state: present
+
+    - name: Enable and start Chrony
+      systemd:
+        name: chrony
+        enabled: yes
+        state: started
+
+    - name: Set timezone
+      timezone:
+        name: Europe/Warsaw
+
+    # Logwatch
+    - name: Install Logwatch
+      apt:
+        name: logwatch
+        state: present
+
+    - name: Create logwatch cache directory
+      file:
+        path: /var/cache/logwatch
+        state: directory
+
+    # Zabezpieczenia kernela
+    - name: Configure kernel security parameters
+      copy:
+        content: |
+          # Zabezpieczenie przed SMURF
+          net.ipv4.icmp_echo_ignore_broadcasts=1
+
+          # Zabezpieczenie przed IP Spoofing
+          net.ipv4.conf.all.rp_filter=1
+          net.ipv4.conf.default.rp_filter=1
+
+          # Ignorowanie ICMP redirect
+          net.ipv4.conf.all.accept_redirects=0
+          net.ipv6.conf.all.accept_redirects=0
+          net.ipv4.conf.default.accept_redirects=0
+          net.ipv6.conf.default.accept_redirects=0
+
+          # Nie wysyłaj ICMP redirects
+          net.ipv4.conf.all.send_redirects=0
+          net.ipv4.conf.default.send_redirects=0
+
+          # Zabezpieczenie przed SYN flood
+          net.ipv4.tcp_syncookies=1
+          net.ipv4.tcp_max_syn_backlog=2048
+          net.ipv4.tcp_synack_retries=2
+          net.ipv4.tcp_syn_retries=5
+
+          # Zwiększenie limitu połączeń
+          net.ipv4.ip_local_port_range=1024 65535
+          net.core.netdev_max_backlog=100000
+          net.core.somaxconn=65535
+
+          # IPv6 zabezpieczenia
+          net.ipv6.conf.default.router_solicitations=0
+          net.ipv6.conf.default.accept_ra_rtr_pref=0
+          net.ipv6.conf.default.accept_ra_pinfo=0
+          net.ipv6.conf.default.accept_ra_defrtr=0
+          net.ipv6.conf.default.autoconf=0
+          net.ipv6.conf.default.dad_transmits=0
+          net.ipv6.conf.default.max_addresses=1
+        dest: /etc/sysctl.d/99-security.conf
+      notify: Apply sysctl settings
+
+    # Konfiguracja LogRotate
+    - name: Configure LogRotate
+      copy:
+        content: |
+          /var/log/syslog
+          /var/log/auth.log
+          /var/log/kern.log
+          /var/log/ufw.log
+          {
+              rotate 14
+              daily
+              missingok
+              notifempty
+              compress
+              delaycompress
+              sharedscripts
+              postrotate
+                  /usr/lib/rsyslog/rsyslog-rotate
+              endscript
+          }
+        dest: /etc/logrotate.d/custom
+
+    # Instalacja libpam-pwquality bez wymuszania mocnych haseł
+    - name: Install libpam-pwquality
+      apt:
+        name: libpam-pwquality
+        state: present
+
+    # Instalacja auditd
+    - name: Install auditd
+      apt:
+        name:
+          - auditd
+          - audispd-plugins
+        state: present
+
+    - name: Enable and start auditd
+      systemd:
+        name: auditd
+        enabled: yes
+        state: started
+
+    # Automatyczne wylogowanie nieaktywnych sesji
+    - name: Configure automatic logout for inactive sessions
+      lineinfile:
+        path: /etc/profile
+        line: "{{ item }}"
+      loop:
+        - "TMOUT=300"
+        - "readonly TMOUT"
+        - "export TMOUT"
+
+    # Sprawdzenie i instalacja aktualizacji mikrokodu procesora
+    - name: Install CPU microcode updates
+      apt:
+        name:
+          - intel-microcode
+          - amd64-microcode
+        state: present
+
+    # Zabezpieczenie pamięci współdzielonej
+    - name: Secure shared memory
+      lineinfile:
+        path: /etc/fstab
+        line: "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0"
+        state: present
+
+  handlers:
+    - name: Restart SSH
+      systemd:
+        name: sshd
+        state: restarted
+
+    - name: Restart Fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted
+
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Apply sysctl settings
+      shell: sysctl -p /etc/sysctl.d/99-security.conf
+      
+  # Zadania które wykonujemy na końcu
+  post_tasks:
+    - name: Sprawdzenie czy istnieją klucze SSL (jeśli nie, tworzy self-signed)
+      stat:
+        path: /home/turbo/docker/nginx/ssl/cert.pem
+      register: ssl_cert
+      
+    - name: Generowanie tymczasowego self-signed certyfikatu
+      shell: |
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /home/turbo/docker/nginx/ssl/key.pem \
+        -out /home/turbo/docker/nginx/ssl/cert.pem \
+        -subj "/C=PL/ST=Dolnoslaskie/L=Wroclaw/O=DevOps/CN=mk.devops.wroclaw.pl"
+      when: not ssl_cert.stat.exists
+      become_user: turbo
+      
+    - name: Ustaw odpowiednie uprawnienia dla plików SSL
+      file:
+        path: "/home/turbo/docker/nginx/ssl/{{ item }}"
+        owner: turbo
+        group: turbo
+        mode: "0600"
+      with_items:
+        - key.pem
+        - cert.pem
+      when: not ssl_cert.stat.exists
+      
+    - name: Uruchom Docker Compose stack
+      shell: cd /home/turbo/docker && docker-compose up -d
+      become_user: turbo
+      
+    - name: Informacja końcowa
+      debug:
+        msg: |
+          Konfiguracja zakończona!
+          
+          Twój serwer jest dostępny pod adresem: mk.devops.wroclaw.pl
+          
+          Ważne informacje:
+          1. Wygenerowano tymczasowy certyfikat self-signed.
+             Skonfiguruj Cloudflare dla właściwego SSL.
+          2. UFW skonfigurowano do pracy z Dockerem i Cloudflare.
+          3. Skonfigurowano Fail2ban dla SSH, Docker i Nginx.
+          4. Upewnij się, że w Cloudflare masz poprawnie skonfigurowany rekord DNS wskazujący na ten serwer.
+          
+          Zalecane jest ponowne uruchomienie serwera po zakończeniu konfiguracji: sudo reboot

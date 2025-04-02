@@ -1,0 +1,53 @@
+# Plik inwentarza Ansible z danymi logowania
+inventory.ini
+
+# Klucze SSH i certyfikaty
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+
+# Pliki tymczasowe Ansible
+*.retry
+
+# Artefakty systemu operacyjnego
+.DS_Store
+Thumbs.db
+
+# Pliki środowiska Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logi
+*.log
+
+# Pliki środowiska
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Pliki IDE
+.idea/
+.vscode/
+*.swp
+*.swo
