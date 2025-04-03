@@ -1,0 +1,198 @@
+---
+- name: Konfiguracja Ubuntu 24.04
+  hosts: servers
+  become: yes
+  
+  tasks:
+    # Aktualizacja systemu
+    - name: Update and upgrade system
+      apt:
+        update_cache: yes
+        upgrade: full
+        autoremove: yes
+        autoclean: yes
+      
+    # Instalacja podstawowych narzędzi
+    - name: Install basic tools
+      apt:
+        name:
+          - bash-completion
+          - curl
+          - wget
+          - vim
+          - git
+          - htop
+          - net-tools
+          - dnsutils
+          - unzip
+          - python3
+          - python3-pip
+        state: present
+        
+    # Konfiguracja UFW
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+        
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+        
+    - name: Allow SSH in UFW
+      ufw:
+        rule: allow
+        name: OpenSSH
+        
+    - name: Allow HTTP/HTTPS in UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - '80'
+        - '443'
+        
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        
+    # Instalacja Fail2ban
+    - name: Install Fail2ban
+      apt:
+        name: fail2ban
+        state: present
+        
+    # Instalacja Docker
+    - name: Install dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+        
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose
+        state: present
+        update_cache: yes
+        
+    - name: Add user to docker group
+      user:
+        name: turbo
+        groups: docker
+        append: yes
+        
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+        
+    # Konfiguracja podstawowego Nginx
+    - name: Create Docker directory structure
+      file:
+        path: "/home/turbo/docker/{{ item }}"
+        state: directory
+        owner: turbo
+        group: turbo
+        mode: '0755'
+      loop:
+        - ""
+        - "nginx"
+        - "nginx/conf.d"
+        - "nginx/html"
+        
+    - name: Create simple docker-compose.yml
+      copy:
+        content: |
+          version: '3'
+          services:
+            nginx:
+              image: nginx:latest
+              container_name: web
+              restart: always
+              ports:
+                - "80:80"
+              volumes:
+                - ./nginx/conf.d:/etc/nginx/conf.d
+                - ./nginx/html:/usr/share/nginx/html
+        dest: /home/turbo/docker/docker-compose.yml
+        owner: turbo
+        group: turbo
+        
+    - name: Create Nginx config
+      copy:
+        content: |
+          server {
+            listen 80;
+            server_name mk.devops.wroclaw.pl;
+            
+            location / {
+                root /usr/share/nginx/html;
+                index index.html;
+            }
+          }
+        dest: /home/turbo/docker/nginx/conf.d/default.conf
+        owner: turbo
+        group: turbo
+        
+    - name: Create index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Ubuntu Server Configuration</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+              h1 { color: #333; }
+            </style>
+          </head>
+          <body>
+            <h1>Serwer skonfigurowany!</h1>
+            <p>Ta strona jest serwowana przez Nginx w kontenerze Docker.</p>
+          </body>
+          </html>
+        dest: /home/turbo/docker/nginx/html/index.html
+        owner: turbo
+        group: turbo
+        
+    - name: Launch Docker Compose
+      become_user: turbo
+      shell: cd /home/turbo/docker && docker-compose up -d
+        
+    # Zakończenie
+    - name: Configuration summary
+      debug:
+        msg: |
+          Konfiguracja podstawowa zakończona!
+          
+          - System zaktualizowany
+          - Zapora skonfigurowana (port 22, 80, 443 otwarte)
+          - Docker zainstalowany
+          - Nginx uruchomiony w kontenerze (port 80)
+          
+          Aby kontynuować konfigurację, dodaj rekord DNS dla mk.devops.wroclaw.pl
+          wskazujący na IP tego serwera i skonfiguruj Cloudflare.
