@@ -131,33 +131,27 @@
         return_content: yes
       register: cloudflare_ips
       
-    - name: Allow Cloudflare IPv4 IPs
+    - name: Allow Cloudflare IPv4 IPs for HTTP/HTTPS
       ufw:
         rule: allow
-        port: "{{ item }}"
+        port: "{{ item.port }}"
         proto: tcp
-        from: "{{ cloudflare_ip }}"
-      loop: ['80', '443']
-      loop_control:
-        loop_var: item
-      with_items: "{{ cloudflare_ips.json.result.ipv4_cidrs }}"
-      loop_control:
-        loop_var: cloudflare_ip
+        from: "{{ item.ip }}"
+      loop: "{{ cloudflare_ipv4_ports }}"
       when: cloudflare_ips.status == 200
+      vars:
+        cloudflare_ipv4_ports: "{{ cloudflare_ips.json.result.ipv4_cidrs | product(['80', '443']) | map('combine', {'ip': item[0], 'port': item[1]}) | list }}"
         
-    - name: Allow Cloudflare IPv6 IPs (if IPv6 is enabled)
+    - name: Allow Cloudflare IPv6 IPs for HTTP/HTTPS
       ufw:
         rule: allow
-        port: "{{ item }}"
+        port: "{{ item.port }}"
         proto: tcp
-        from: "{{ cloudflare_ip }}"
-      loop: ['80', '443']
-      loop_control:
-        loop_var: item
-      with_items: "{{ cloudflare_ips.json.result.ipv6_cidrs }}"
-      loop_control:
-        loop_var: cloudflare_ip
+        from: "{{ item.ip }}"
+      loop: "{{ cloudflare_ipv6_ports }}"
       when: cloudflare_ips.status == 200
+      vars:
+        cloudflare_ipv6_ports: "{{ cloudflare_ips.json.result.ipv6_cidrs | product(['80', '443']) | map('combine', {'ip': item[0], 'port': item[1]}) | list }}"
       
     # Dodanie reguł dla Docker
     - name: Allow Docker exposed ports in UFW
@@ -171,14 +165,6 @@
         - '2377'  # Docker Swarm cluster management
         - '7946'  # Docker Swarm node communication (TCP i UDP)
         - '4789'  # Docker Swarm overlay network (UDP)
-
-    - name: Enable UFW logging
-      ufw:
-        logging: 'on'
-
-    - name: Enable UFW
-      ufw:
-        state: enabled
 
     # Instalacja Fail2ban
     - name: Install Fail2ban
