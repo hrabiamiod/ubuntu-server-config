@@ -123,36 +123,87 @@
         rule: allow
         port: '443'
         proto: tcp
-        
-    # Dodanie reguł dla Cloudflare
-    - name: Get Cloudflare IPs
-      uri:
-        url: https://api.cloudflare.com/client/v4/ips
-        return_content: yes
-      register: cloudflare_ips
-      
-    - name: Allow Cloudflare IPv4 IPs for HTTP/HTTPS
-      ufw:
-        rule: allow
-        port: "{{ item.port }}"
-        proto: tcp
-        from: "{{ item.ip }}"
-      loop: "{{ cloudflare_ipv4_ports }}"
-      when: cloudflare_ips.status == 200
-      vars:
-        cloudflare_ipv4_ports: "{{ cloudflare_ips.json.result.ipv4_cidrs | product(['80', '443']) | map('combine', {'ip': item[0], 'port': item[1]}) | list }}"
-        
-    - name: Allow Cloudflare IPv6 IPs for HTTP/HTTPS
-      ufw:
-        rule: allow
-        port: "{{ item.port }}"
-        proto: tcp
-        from: "{{ item.ip }}"
-      loop: "{{ cloudflare_ipv6_ports }}"
-      when: cloudflare_ips.status == 200
-      vars:
-        cloudflare_ipv6_ports: "{{ cloudflare_ips.json.result.ipv6_cidrs | product(['80', '443']) | map('combine', {'ip': item[0], 'port': item[1]}) | list }}"
-      
+
+# Zaktualizowana sekcja dla Cloudflare - zastąp tę część w playbook.yml
+
+# Dodanie reguł dla Cloudflare (metoda uproszczona - zamiast pobierania z API używamy znanych adresów)
+- name: Allow Cloudflare IPv4 ranges in UFW (HTTP)
+  ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+    from: "{{ item }}"
+  loop:
+    - 173.245.48.0/20
+    - 103.21.244.0/22
+    - 103.22.200.0/22
+    - 103.31.4.0/22
+    - 141.101.64.0/18
+    - 108.162.192.0/18
+    - 190.93.240.0/20
+    - 188.114.96.0/20
+    - 197.234.240.0/22
+    - 198.41.128.0/17
+    - 162.158.0.0/15
+    - 104.16.0.0/13
+    - 104.24.0.0/14
+    - 172.64.0.0/13
+    - 131.0.72.0/22
+
+- name: Allow Cloudflare IPv4 ranges in UFW (HTTPS)
+  ufw:
+    rule: allow
+    port: '443'
+    proto: tcp
+    from: "{{ item }}"
+  loop:
+    - 173.245.48.0/20
+    - 103.21.244.0/22
+    - 103.22.200.0/22
+    - 103.31.4.0/22
+    - 141.101.64.0/18
+    - 108.162.192.0/18
+    - 190.93.240.0/20
+    - 188.114.96.0/20
+    - 197.234.240.0/22
+    - 198.41.128.0/17
+    - 162.158.0.0/15
+    - 104.16.0.0/13
+    - 104.24.0.0/14
+    - 172.64.0.0/13
+    - 131.0.72.0/22
+
+# Opcjonalna część dla IPv6 (możesz ją usunąć jeśli nie używasz IPv6)
+- name: Allow Cloudflare IPv6 ranges in UFW (HTTP)
+  ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+    from: "{{ item }}"
+  loop:
+    - 2400:cb00::/32
+    - 2606:4700::/32
+    - 2803:f800::/32
+    - 2405:b500::/32
+    - 2405:8100::/32
+    - 2a06:98c0::/29
+    - 2c0f:f248::/32
+
+- name: Allow Cloudflare IPv6 ranges in UFW (HTTPS)
+  ufw:
+    rule: allow
+    port: '443'
+    proto: tcp
+    from: "{{ item }}"
+  loop:
+    - 2400:cb00::/32
+    - 2606:4700::/32
+    - 2803:f800::/32
+    - 2405:b500::/32
+    - 2405:8100::/32
+    - 2a06:98c0::/29
+    - 2c0f:f248::/32
+
     # Dodanie reguł dla Docker
     - name: Allow Docker exposed ports in UFW
       ufw:
